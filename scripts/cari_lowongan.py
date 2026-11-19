@@ -91,6 +91,39 @@ PROFIL = {
     },
 }
 
+# Profil awal Tania (4 CV: Administration, Operations, GIS, HR & Admin).
+PROFIL_TANIA = {
+    "Administration": {
+        "judul": ["admin", "administrasi", "administrative", "administration", "data entry", "secretary",
+                  "sekretaris", "office", "document control", "project admin", "back office", "clerk"],
+        "isi": ["excel", "google workspace", "arsip", "dokumen", "surat", "laporan", "notulen",
+                "meeting minutes", "input data", "scheduling", "jadwal", "correspondence"],
+    },
+    "Operations": {
+        "judul": ["operation", "operasional", "project coordinator", "project support", "project officer",
+                  "facility", "asset", "inventory", "general affair", "business support", "event"],
+        "isi": ["asset", "aset", "inventory", "data management", "reporting", "koordinasi",
+                "process improvement", "stakeholder", "monitoring", "proposal"],
+    },
+    "GIS": {
+        "judul": ["gis", "geospatial", "geospasial", "spatial", "spasial", "remote sensing",
+                  "penginderaan jauh", "mapping", "pemetaan", "cartograph", "kartograf", "surveyor",
+                  "land use", "tata ruang"],
+        "isi": ["arcgis", "qgis", "google earth engine", "envi", "satellite", "citra", "raster",
+                "land cover", "geografi", "geography", "field survey"],
+    },
+    "HR & Admin": {
+        "judul": ["hr", "human resource", "sdm", "recruit", "talent acquisition", "personalia",
+                  "hr admin", "people", "hrga"],
+        "isi": ["rekrutmen", "recruitment", "interview", "onboarding", "payroll", "assessment",
+                "candidate", "kandidat", "scheduling", "absensi"],
+    },
+}
+
+# Profil yang dibuat otomatis kalau orangnya belum punya profil di tracker.
+# Setelah dibuat, ubah dari tracker (tab Rekomendasi → Atur minat pencarian), bukan di sini.
+PROFIL_AWAL = {"Fatiya": PROFIL, "Tania": PROFIL_TANIA}
+
 # Lowongan yang terlalu senior atau tidak relevan
 KATA_NEGATIF_JUDUL = ["senior", "sr.", "manager", "manajer", "head", "lead", "director",
                       "direktur", "principal", "vp ", "chief", "superintendent", "kepala",
@@ -662,10 +695,11 @@ def _daftar_kata(nilai_) -> list[str]:
 
 
 def muat_profil() -> dict[str, dict]:
-    """Baca minat tiap orang dari koleksi 'profil'. Buat profil awal kalau masih kosong."""
-    profil = {}
+    """Baca minat tiap orang dari koleksi 'profil'. Buat profil awal untuk orang di PROFIL_AWAL yang belum ada."""
+    profil, sudah = {}, set()
     for d in daftar_dokumen("profil"):
         nama = (d.get("nama") or "").strip()
+        sudah.add(nama.lower())
         minat = {}
         for m in d.get("minat") or []:
             if not isinstance(m, dict):
@@ -676,14 +710,15 @@ def muat_profil() -> dict[str, dict]:
                 minat[label] = {"judul": judul, "isi": isi}
         if nama and minat:
             profil[nama] = minat
-    if not profil:
-        awal = {"nama": PEMILIK_AWAL,
-                "minat": [{"label": k, "judul": v["judul"], "isi": v["isi"]} for k, v in PROFIL.items()]}
-        doc_id = re.sub(r"[^a-z0-9]+", "-", PEMILIK_AWAL.lower()).strip("-") or "awal"
+    for nama, minat in PROFIL_AWAL.items():
+        if nama.lower() in sudah:
+            continue  # profil yang sudah ada (termasuk yang sudah diedit) tidak ditimpa
+        awal = {"nama": nama, "minat": [{"label": k, "judul": v["judul"], "isi": v["isi"]} for k, v in minat.items()]}
+        doc_id = re.sub(r"[^a-z0-9]+", "-", nama.lower()).strip("-") or "awal"
         requests.patch(f"{BASE}/profil/{doc_id}", params={"key": FIREBASE_API_KEY},
                        json={"fields": {k: ke_firestore(v) for k, v in awal.items()}}, timeout=20).raise_for_status()
-        profil = {PEMILIK_AWAL: PROFIL}
-        print(f"Profil awal untuk {PEMILIK_AWAL} dibuat.")
+        profil[nama] = minat
+        print(f"Profil awal untuk {nama} dibuat.")
     return profil
 
 
@@ -817,7 +852,7 @@ def saring(semua: list[dict]) -> list[dict]:
 def main() -> int:
     kering = "--dry-run" in sys.argv
     global PROFIL_ORANG
-    PROFIL_ORANG = {PEMILIK_AWAL: PROFIL} if kering else muat_profil()
+    PROFIL_ORANG = dict(PROFIL_AWAL) if kering else muat_profil()
     print("Profil:", ", ".join(f"{n} ({len(m)} minat)" for n, m in PROFIL_ORANG.items()))
     semua, laporan = kumpulkan(kata_cari_dari_profil(PROFIL_ORANG))
     cocok = saring(semua)
