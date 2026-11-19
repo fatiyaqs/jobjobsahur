@@ -3,9 +3,10 @@ Pencari lowongan otomatis untuk Job Vacancy Tracker.
 
 Dijalankan oleh GitHub Actions (lihat .github/workflows/cari-lowongan.yml) setiap hari.
 Script ini:
-  1. Mengambil lowongan terbaru dari beberapa sumber (Kalibrr, Jobstreet, Telegram GIS/RS Jobs, Disnakerja).
-  2. Memberi skor kecocokan terhadap 6 versi CV Fatiya (GIS, Research, Operations,
-     Administration, Human Resources, General).
+  1. Mengambil lowongan terbaru dari beberapa sumber (Kalibrr, Jobstreet, Telegram GIS/RS Jobs, Disnakerja,
+     Dealls, Glints, Talentics).
+  2. Memberi skor kecocokan terhadap minat setiap orang di tracker (diatur dari tab
+     Rekomendasi, tersimpan di koleksi "profil"; profil awal: 6 CV Fatiya).
   3. Menyimpan lowongan yang cocok ke Firestore (koleksi "rekomendasi"), lalu
      tracker menampilkannya di tab "Rekomendasi".
 
@@ -21,6 +22,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -30,11 +32,16 @@ from bs4 import BeautifulSoup
 # ============================================================
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "AIzaSyCUPAlkUIyZilT98o2RsZP0DOdWtTCW8Dk")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "jobjobsahur-job")
-PEMILIK = "Fatiya"           # nama orang di tracker yang menjadi sasaran rekomendasi
+# Minat tiap orang diatur dari tracker (tab Rekomendasi → "Atur minat pencarian") dan
+# tersimpan di Firestore koleksi "profil". PROFIL di bawah hanya dipakai sekali sebagai
+# profil awal untuk PEMILIK_AWAL kalau belum ada profil sama sekali.
+PEMILIK_AWAL = "Fatiya"
 SKOR_MINIMUM = 6              # lowongan di bawah skor ini tidak disimpan
 MAKS_HARI = 21                # abaikan lowongan yang diposting lebih lama dari ini
 
-# Kata kunci pencarian yang dikirim ke tiap situs lowongan
+MAKS_KATA_CARI = 30          # batas jumlah kata kunci yang dikirim ke tiap situs per run
+
+# Kata kunci pencarian tambahan (selain yang diambil dari minat tiap orang)
 KATA_KUNCI_CARI = [
     "GIS", "geospatial", "remote sensing", "pemetaan", "geografi", "kartografi",
     "surveyor", "lingkungan", "environmental", "research assistant", "asisten peneliti",
@@ -42,7 +49,7 @@ KATA_KUNCI_CARI = [
     "human resources", "HR staff", "recruitment",
 ]
 
-# 6 profil CV. Kata kunci judul bernilai 3, kata kunci deskripsi bernilai 1.
+# Profil awal Fatiya (6 CV). Kata kunci judul bernilai 3, kata kunci deskripsi bernilai 1.
 PROFIL = {
     "GIS": {
         "judul": ["gis", "geospatial", "geospasial", "spatial", "spasial", "remote sensing",
@@ -93,7 +100,7 @@ KATA_NEGATIF_JUDUL = ["senior", "sr.", "manager", "manajer", "head", "lead", "di
 KATA_NEGATIF_ISI = ["minimal 5 tahun", "minimum 5 years", "5+ years", "min. 5", "7+ years",
                     "10+ years", "minimal 4 tahun", "4+ years"]
 KATA_POSITIF_ISI = ["fresh graduate", "lulusan baru", "fresh grad", "0-1", "0 - 1",
-                    "1 tahun", "1 year", "entry level", "geografi", "geography"]
+                    "1 tahun", "1 year", "entry level"]
 
 # Hanya lowongan di Jabodetabek yang disimpan.
 WILAYAH = ["jakarta", "dki", "jabodetabek", "depok", "bogor", "cibinong", "sentul", "cileungsi",
@@ -103,6 +110,29 @@ TERIMA_REMOTE = False   # ubah ke True kalau lowongan remote juga ingin ditampil
 
 TELEGRAM_CHANNELS = ["gis_id_jobs"]
 DISNAKERJA_HALAMAN = 6        # jumlah halaman daftar terbaru Disnakerja yang dibaca (±12 perusahaan/halaman)
+
+# Situs yang dibaca dari halaman daftar/sitemap lalu halaman detail tiap lowongan.
+# {q} = kata kunci (URL-encoded), {slug} = kata kunci format-url (mis. data-analyst).
+SUMBER_HTML = {
+    "Dealls": {
+        "daftar": ["https://dealls.com/loker/posisi/loker-{slug}", "https://dealls.com/?searchJob={q}"],
+        "pola": r"https?://(?:www\.)?dealls\.com/(?:en/)?loker/[a-z0-9-]+~[a-z0-9-]+",
+        "sitemap": ["https://dealls.com/sitemap.xml"],
+    },
+    "Glints": {
+        "daftar": ["https://glints.com/id/opportunities/jobs/explore?keyword={q}&country=ID&locationName=All+Cities%2FProvinces",
+                   "https://glints.com/id/lowongan-kerja/{slug}"],
+        "pola": r"https?://glints\.com/id/(?:en/)?opportunities/jobs/[a-z0-9-]+/[0-9a-f]{8}-[0-9a-f-]{27}",
+        "sitemap": [],
+    },
+    "Talentics": {
+        "daftar": ["https://jobs.talentics.id/jobs?keyword={q}", "https://jobs.talentics.id/jobs"],
+        "pola": r"https?://jobs\.talentics\.id/(?!jobs/?$|login|register|faq|about|privacy|terms)[a-z0-9-]+/[a-z0-9][^\s\"'<>#?]*",
+        "sitemap": ["https://jobs.talentics.id/sitemap.xml"],
+        "wajib_jsonld": True,   # halaman daftarnya dimuat JavaScript, jadi hanya terima detail yang jelas lowongan
+    },
+}
+MAKS_DETAIL_PER_SUMBER = 40   # batas halaman detail yang dibuka per situs per run
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -298,7 +328,7 @@ def sumber_disnakerja(halaman: int) -> list[dict]:
         # Pilih posisi yang paling cocok dengan profil sebagai judul rekomendasi
         kandidat = [{"posisi": p, "isi": isi, "perusahaan": perusahaan} for p in posisi[:15]] or \
                    [{"posisi": perusahaan, "isi": isi, "perusahaan": perusahaan}]
-        terbaik = max(kandidat, key=lambda k: nilai(k)[0])
+        terbaik = max(kandidat, key=skor_terbaik)
         m_th = re.search(r"(\d+)", pengalaman)
         if m_th and int(m_th.group(1)) >= 3:
             isi += " minimal 5 tahun"  # dorong skor turun untuk lowongan berpengalaman
@@ -317,6 +347,158 @@ def sumber_disnakerja(halaman: int) -> list[dict]:
             "isi": isi,
         })
         time.sleep(0.6)
+    return hasil
+
+
+TANDA_DITUTUP = re.compile(r"(?i)(lowongan ini (sudah|telah) ditutup|no longer accepting|job (is )?closed|"
+                           r"lowongan (sudah )?(tidak tersedia|kedaluwarsa)|this job has expired)")
+
+
+def _slug(k: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", k.lower()).strip("-")
+
+
+def _cari_jobposting(soup: BeautifulSoup) -> dict | None:
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or tag.get_text() or "")
+        except (ValueError, TypeError):
+            continue
+        antrian = data if isinstance(data, list) else [data]
+        while antrian:
+            d = antrian.pop(0)
+            if isinstance(d, list):
+                antrian.extend(d); continue
+            if not isinstance(d, dict):
+                continue
+            jenis = d.get("@type")
+            if jenis == "JobPosting" or (isinstance(jenis, list) and "JobPosting" in jenis):
+                return d
+            antrian.extend(v for v in d.values() if isinstance(v, (dict, list)))
+    return None
+
+
+def _lokasi_jsonld(jp: dict) -> tuple[str, str]:
+    tempat = jp.get("jobLocation") or []
+    tempat = tempat if isinstance(tempat, list) else [tempat]
+    nama = []
+    for t in tempat:
+        alamat = t.get("address", {}) if isinstance(t, dict) else {}
+        if isinstance(alamat, str):
+            nama.append(alamat); continue
+        nama += [str(alamat.get(k)) for k in ("addressLocality", "addressRegion") if alamat.get(k)]
+    sistem = "Remote" if "TELECOMMUTE" in str(jp.get("jobLocationType", "")).upper() else ""
+    return ", ".join(dict.fromkeys(nama)), sistem
+
+
+def _gaji_jsonld(jp: dict) -> str:
+    v = ambil(jp, "baseSalary", "value")
+    if isinstance(v, dict) and (v.get("minValue") or v.get("maxValue")):
+        rp = lambda x: f"Rp{float(x)/1e6:.1f} jt".replace(".0 ", " ") if x else ""
+        return " – ".join(x for x in [rp(v.get("minValue")), rp(v.get("maxValue"))] if x)
+    return ""
+
+
+def baca_detail(url: str, isi_html: str, nama: str, wajib_jsonld: bool = False) -> dict | None:
+    soup = BeautifulSoup(isi_html, "html.parser")
+    jp = _cari_jobposting(soup)
+    for t in soup(["script", "style", "noscript", "nav", "header", "footer", "svg"]):
+        t.decompose()
+    utama = soup.find("main") or soup.find("article") or soup.body or soup
+    teks = utama.get_text("\n", strip=True)
+    if TANDA_DITUTUP.search(teks):
+        return None
+    if jp:
+        lokasi, sistem = _lokasi_jsonld(jp)
+        posisi = bersih(jp.get("title"))
+        perusahaan = bersih(ambil(jp, "hiringOrganization", "name") or "")
+        diposting, deadline = tanggal_iso(jp.get("datePosted")), tanggal_iso(jp.get("validThrough"))
+        isi, gaji = bersih(jp.get("description"))[:3000], _gaji_jsonld(jp)
+    else:
+        if wajib_jsonld:
+            return None
+        meta = lambda prop: (soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop}) or {}).get("content", "")
+        h1 = soup.find("h1")
+        posisi = bersih(h1.get_text(" ") if h1 else meta("og:title"))
+        posisi = re.split(r"\s+[|\-–]\s+(?:Glints|Dealls|Talentics)", posisi)[0]
+        desk = meta("og:description") or meta("description")
+        m = re.search(r"(?i)\b(?:at|di)\s+(.+?)\s+(?:in|di)\s+([A-Z][\w .,-]+)", desk or "")
+        perusahaan = bersih(m.group(1)) if m else ""
+        lokasi = bersih(m.group(2)) if m else next((w.title() for w in WILAYAH if w in (desk or "").lower()), "")
+        sistem = "Remote" if re.search(r"(?i)\bremote\b|jarak jauh", desk or "") else ""
+        diposting, deadline, gaji, isi = "", "", "", teks[:3000]
+    if not posisi:
+        return None
+    m_email = re.search(r"[\w.+-]+@[\w-]+\.[a-z]{2,}(?:\.[a-z]{2,})?", teks)
+    return {"sumber": nama, "sid": f"{_slug(nama)}-{hashlib.md5(url.split('?')[0].encode()).hexdigest()[:14]}",
+            "posisi": posisi[:140], "perusahaan": perusahaan[:120], "lokasi": lokasi[:120], "sistem": sistem,
+            "link": url, "kontak": m_email.group(0) if m_email else "", "diposting": diposting,
+            "deadline": deadline, "gaji": gaji, "isi": isi}
+
+
+def _tautan_sitemap(url: str, pola: re.Pattern, kedalaman: int = 0) -> list[str]:
+    r = requests.get(url, headers=UA, timeout=30)
+    r.raise_for_status()
+    batas = (datetime.now(timezone.utc) - timedelta(days=MAKS_HARI)).strftime("%Y-%m-%d")
+    hasil = []
+    for blok in re.findall(r"<(?:url|sitemap)>(.*?)</(?:url|sitemap)>", r.text, re.S):
+        loc = re.search(r"<loc>\s*(.*?)\s*</loc>", blok)
+        mod = re.search(r"<lastmod>\s*(.*?)\s*</lastmod>", blok)
+        if not loc:
+            continue
+        loc = html.unescape(loc.group(1))
+        if loc.endswith(".xml") or "sitemap" in loc:
+            if kedalaman < 1 and re.search(r"(?i)job|loker|lowongan|vacanc|career", loc):
+                hasil += _tautan_sitemap(loc, pola, kedalaman + 1)
+            continue
+        if pola.match(loc) and (not mod or tanggal_iso(mod.group(1)) >= batas):
+            hasil.append(loc)
+    return hasil
+
+
+def sumber_html(nama: str, kata_cari: list[str]) -> list[dict]:
+    cfg = SUMBER_HTML[nama]
+    pola = re.compile(cfg["pola"])
+    tautan, catatan = [], []
+    for kata in kata_cari:
+        for templat in cfg["daftar"]:
+            url = templat.format(q=quote_plus(kata), slug=_slug(kata))
+            try:
+                r = requests.get(url, headers=UA, timeout=30)
+                if r.status_code == 404:
+                    continue
+                r.raise_for_status()
+            except requests.RequestException as e:
+                catatan.append(f"{url}: {e}"); continue
+            for href in re.findall(r"""href=["']([^"'#]+)""", r.text) + re.findall(r"https?://[^\s\"'<>]+", r.text):
+                u = urljoin(url, html.unescape(href)).split("?")[0].rstrip("/")
+                if pola.match(u) and u not in tautan:
+                    tautan.append(u)
+            time.sleep(0.8)
+    for sm in cfg.get("sitemap", []):
+        try:
+            tautan += [u for u in _tautan_sitemap(sm, pola) if u not in tautan]
+        except requests.RequestException as e:
+            catatan.append(f"sitemap: {e}")
+    if not tautan:
+        raise RuntimeError("Tidak ada tautan lowongan ditemukan (situs memblokir atau strukturnya berubah). "
+                           + "; ".join(catatan[:2]))
+    # Dahulukan tautan yang judulnya (slug) mengandung kata kunci minat
+    kata_slug = {_slug(k) for k in kata_cari if len(k) >= 3}
+    cocok = [u for u in tautan if any(k in u.lower() for k in kata_slug)]
+    urut = (cocok + [u for u in tautan if u not in cocok])[:MAKS_DETAIL_PER_SUMBER]
+    hasil = []
+    for u in urut:
+        try:
+            r = requests.get(u, headers=UA, timeout=30)
+            r.raise_for_status()
+            d = baca_detail(u, r.text, nama, cfg.get("wajib_jsonld", False))
+            if d:
+                hasil.append(d)
+        except requests.RequestException as e:
+            print(f"[{nama}] lewati {u}: {e}", file=sys.stderr)
+        time.sleep(0.8)
+    print(f"[{nama}] {len(tautan)} tautan, {len(urut)} dibuka, {len(hasil)} lowongan terbaca")
     return hasil
 
 
@@ -370,32 +552,56 @@ def ada(kata: str, teks: str) -> bool:
     return kata in teks
 
 
-def nilai(lowongan: dict) -> tuple[int, str, list[str]]:
+PROFIL_ORANG: dict[str, dict] = {}   # {nama: {label: {"judul": [...], "isi": [...]}}}, diisi di main()
+
+
+def nilai(lowongan: dict, minat: dict | None = None) -> tuple[int, str, list[str]]:
+    """Skor kecocokan lowongan terhadap satu set minat (default: profil awal)."""
+    minat = PROFIL if minat is None else minat
     judul = lowongan.get("posisi", "").lower()
     isi = (lowongan.get("isi", "") + " " + lowongan.get("perusahaan", "")).lower()
-    terbaik, cv_terbaik, alasan_terbaik = 0, "General", []
-    for cv, kk in PROFIL.items():
+    terbaik, cv_terbaik, alasan_terbaik = 0, next(iter(minat), "Umum"), []
+    for cv, kk in minat.items():
         skor, alasan = 0, []
-        for k in kk["judul"]:
+        for k in kk.get("judul", []):
             if ada(k, judul):
                 skor += 3; alasan.append(k)
             elif ada(k, isi):
                 skor += 1
-        for k in kk["isi"]:
+        for k in kk.get("isi", []):
             if ada(k, judul) or ada(k, isi):
                 skor += 1; alasan.append(k)
-        if cv == "General":
+        if cv.lower() in ("general", "umum"):
             skor = min(skor, 4)  # profil umum hanya sebagai cadangan
         if skor > terbaik:
             terbaik, cv_terbaik, alasan_terbaik = skor, cv, alasan
     bonus = 0
-    if any(ada(k, judul) for k in KATA_NEGATIF_JUDUL):
+    # Kata negatif diabaikan kalau orang ini memang mencari bidang tersebut (mis. "sales", "developer")
+    milik = " ".join(j for kk in minat.values() for j in kk.get("judul", []))
+    negatif = [k for k in KATA_NEGATIF_JUDUL if k.strip(" .") not in milik]
+    if any(ada(k, judul) for k in negatif):
         bonus -= 8
     if any(k in isi for k in KATA_NEGATIF_ISI):
         bonus -= 4
     if any(k in isi or k in judul for k in KATA_POSITIF_ISI):
-        bonus += 2; alasan_terbaik.append("cocok untuk fresh grad/geografi")
+        bonus += 2; alasan_terbaik.append("cocok untuk fresh graduate")
     return terbaik + bonus, cv_terbaik, list(dict.fromkeys(alasan_terbaik))[:6]
+
+
+def nilai_semua(lowongan: dict) -> dict:
+    """{nama: {cv, skor, alasan}} untuk tiap orang yang skornya lolos SKOR_MINIMUM."""
+    hasil = {}
+    for nama, minat in (PROFIL_ORANG or {PEMILIK_AWAL: PROFIL}).items():
+        if not minat:
+            continue
+        skor, cv, alasan = nilai(lowongan, minat)
+        if skor >= SKOR_MINIMUM:
+            hasil[nama] = {"cv": cv, "skor": skor, "alasan": alasan}
+    return hasil
+
+
+def skor_terbaik(lowongan: dict) -> int:
+    return max((nilai(lowongan, m)[0] for m in (PROFIL_ORANG or {PEMILIK_AWAL: PROFIL}).values() if m), default=0)
 
 
 # ============================================================
@@ -420,6 +626,76 @@ def ke_firestore(v):
     return {"stringValue": str(v)}
 
 
+def dari_firestore(v: dict):
+    if not isinstance(v, dict) or not v:
+        return None
+    jenis, isi = next(iter(v.items()))
+    if jenis == "arrayValue":
+        return [dari_firestore(x) for x in (isi or {}).get("values", [])]
+    if jenis == "mapValue":
+        return {k: dari_firestore(x) for k, x in (isi or {}).get("fields", {}).items()}
+    if jenis == "integerValue":
+        return int(isi)
+    return isi
+
+
+def daftar_dokumen(koleksi: str) -> list[dict]:
+    hasil, token = [], None
+    while True:
+        params = {"key": FIREBASE_API_KEY, "pageSize": 300}
+        if token:
+            params["pageToken"] = token
+        r = requests.get(f"{BASE}/{koleksi}", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for d in data.get("documents", []):
+            hasil.append({"_name": d["name"], **{k: dari_firestore(v) for k, v in d.get("fields", {}).items()}})
+        token = data.get("nextPageToken")
+        if not token:
+            return hasil
+
+
+def _daftar_kata(nilai_) -> list[str]:
+    if isinstance(nilai_, str):
+        nilai_ = nilai_.split(",")
+    return [str(x).strip().lower() for x in (nilai_ or []) if str(x).strip()]
+
+
+def muat_profil() -> dict[str, dict]:
+    """Baca minat tiap orang dari koleksi 'profil'. Buat profil awal kalau masih kosong."""
+    profil = {}
+    for d in daftar_dokumen("profil"):
+        nama = (d.get("nama") or "").strip()
+        minat = {}
+        for m in d.get("minat") or []:
+            if not isinstance(m, dict):
+                continue
+            label = (m.get("label") or "").strip() or "Minat"
+            judul, isi = _daftar_kata(m.get("judul")), _daftar_kata(m.get("isi"))
+            if judul or isi:
+                minat[label] = {"judul": judul, "isi": isi}
+        if nama and minat:
+            profil[nama] = minat
+    if not profil:
+        awal = {"nama": PEMILIK_AWAL,
+                "minat": [{"label": k, "judul": v["judul"], "isi": v["isi"]} for k, v in PROFIL.items()]}
+        doc_id = re.sub(r"[^a-z0-9]+", "-", PEMILIK_AWAL.lower()).strip("-") or "awal"
+        requests.patch(f"{BASE}/profil/{doc_id}", params={"key": FIREBASE_API_KEY},
+                       json={"fields": {k: ke_firestore(v) for k, v in awal.items()}}, timeout=20).raise_for_status()
+        profil = {PEMILIK_AWAL: PROFIL}
+        print(f"Profil awal untuk {PEMILIK_AWAL} dibuat.")
+    return profil
+
+
+def kata_cari_dari_profil(profil: dict[str, dict]) -> list[str]:
+    kata = []
+    for minat in profil.values():
+        for kk in minat.values():
+            kata += [k for k in kk.get("judul", []) if len(k) >= 3][:4]
+    kata += [k.lower() for k in KATA_KUNCI_CARI]
+    return list(dict.fromkeys(kata))[:MAKS_KATA_CARI]
+
+
 def id_dokumen(sid: str) -> str:
     return hashlib.sha1(sid.encode()).hexdigest()[:20]
 
@@ -427,6 +703,13 @@ def id_dokumen(sid: str) -> str:
 def sudah_ada(doc_id: str) -> bool:
     r = requests.get(f"{BASE}/rekomendasi/{doc_id}", params={"key": FIREBASE_API_KEY}, timeout=20)
     return r.status_code == 200
+
+
+def perbarui_rekomendasi(doc_id: str, data: dict) -> None:
+    """Perbarui data lowongan & kecocokan tanpa menyentuh status/abaikan yang diatur pengguna."""
+    params = [("key", FIREBASE_API_KEY)] + [("updateMask.fieldPaths", k) for k in data]
+    requests.patch(f"{BASE}/rekomendasi/{doc_id}", params=params,
+                   json={"fields": {k: ke_firestore(v) for k, v in data.items()}}, timeout=20).raise_for_status()
 
 
 def simpan_rekomendasi(doc_id: str, data: dict) -> str:
@@ -473,12 +756,13 @@ def simpan_status(status: dict) -> None:
 # ============================================================
 # 6. PROGRAM UTAMA
 # ============================================================
-def kumpulkan() -> tuple[list[dict], dict]:
+def kumpulkan(kata_cari: list[str]) -> tuple[list[dict], dict]:
     semua, laporan = [], {}
-    tugas = ([("Kalibrr", sumber_kalibrr, k) for k in KATA_KUNCI_CARI]
-             + [("Jobstreet", sumber_jobstreet, k) for k in KATA_KUNCI_CARI]
+    tugas = ([("Kalibrr", sumber_kalibrr, k) for k in kata_cari]
+             + [("Jobstreet", sumber_jobstreet, k) for k in kata_cari]
              + [("Telegram", sumber_telegram, c) for c in TELEGRAM_CHANNELS]
-             + [("Disnakerja", sumber_disnakerja, n) for n in range(1, DISNAKERJA_HALAMAN + 1)])
+             + [("Disnakerja", sumber_disnakerja, n) for n in range(1, DISNAKERJA_HALAMAN + 1)]
+             + [(n, (lambda nama, k=kata_cari: sumber_html(nama, k[:12])), n) for n in SUMBER_HTML])
     for nama, fungsi, arg in tugas:
         lap = laporan.setdefault(nama, {"ok": 0, "gagal": 0, "lowongan": 0, "error": ""})
         try:
@@ -519,10 +803,12 @@ def saring(semua: list[dict]) -> list[dict]:
             continue
         if not di_jabodetabek(low):
             continue
-        skor, cv, alasan = nilai(low)
-        if skor < SKOR_MINIMUM:
+        per_orang = nilai_semua(low)
+        if not per_orang:
             continue
-        low.update({"skor": skor, "cv": cv, "alasan": alasan})
+        nama, terbaik = max(per_orang.items(), key=lambda x: x[1]["skor"])
+        low.update({"cocok": per_orang, "skor": terbaik["skor"], "cv": terbaik["cv"],
+                    "alasan": terbaik["alasan"], "untuk": nama})
         cocok.append(low)
     cocok.sort(key=lambda x: -x["skor"])
     return cocok
@@ -530,7 +816,10 @@ def saring(semua: list[dict]) -> list[dict]:
 
 def main() -> int:
     kering = "--dry-run" in sys.argv
-    semua, laporan = kumpulkan()
+    global PROFIL_ORANG
+    PROFIL_ORANG = {PEMILIK_AWAL: PROFIL} if kering else muat_profil()
+    print("Profil:", ", ".join(f"{n} ({len(m)} minat)" for n, m in PROFIL_ORANG.items()))
+    semua, laporan = kumpulkan(kata_cari_dari_profil(PROFIL_ORANG))
     cocok = saring(semua)
     print(f"Total diambil: {len(semua)} | cocok: {len(cocok)}")
     baru = 0
@@ -544,15 +833,17 @@ def main() -> int:
             "diposting": low.get("diposting", ""), "deadline": low.get("deadline", ""),
             "deadlineTeks": low.get("deadline_teks", ""), "gaji": low.get("gaji", ""),
             "cv": low["cv"], "skor": low["skor"], "alasan": low["alasan"],
-            "ringkas": low.get("isi", "")[:400], "untuk": PEMILIK,
-            "status": "baru", "ditemukan": sekarang,
+            "ringkas": low.get("isi", "")[:400], "untuk": low["untuk"], "cocok": low["cocok"],
         }
-        print(f"  [{low['skor']:>2}] {low['cv']:<15} {low['posisi'][:60]} — {low.get('perusahaan','')}")
+        print(f"  [{low['skor']:>2}] {', '.join(f'{n}:{c["cv"]}' for n, c in low['cocok'].items()):<40} "
+              f"{low['posisi'][:50]} — {low.get('perusahaan','')}")
         if kering:
             continue
         doc_id = id_dokumen(low["sid"])
         try:
-            if not sudah_ada(doc_id) and simpan_rekomendasi(doc_id, data) == "baru":
+            if sudah_ada(doc_id):
+                perbarui_rekomendasi(doc_id, data)
+            elif simpan_rekomendasi(doc_id, {**data, "status": "baru", "ditemukan": sekarang}) == "baru":
                 baru += 1
         except requests.HTTPError as e:
             print(f"Gagal menyimpan {low['sid']}: {e}", file=sys.stderr)
