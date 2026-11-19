@@ -166,7 +166,7 @@ SUMBER_HTML = {
     },
 }
 MAKS_DETAIL_PER_SUMBER = 40   # batas halaman detail yang dibuka per situs per run
-BATAS_MENIT = 25              # setelah ini pencarian dihentikan dan hasil yang ada langsung disimpan
+BATAS_MENIT = 16              # setelah ini pencarian dihentikan dan hasil yang ada langsung disimpan (aman di bawah batas 20 menit GitHub)
 GAGAL_BERUNTUN_MAKS = 2       # situs yang gagal 2x berturut-turut dilewati sisanya (biasanya karena memblokir)
 _MULAI = time.monotonic()
 
