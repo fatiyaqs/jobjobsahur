@@ -166,6 +166,13 @@ SUMBER_HTML = {
     },
 }
 MAKS_DETAIL_PER_SUMBER = 40   # batas halaman detail yang dibuka per situs per run
+BATAS_MENIT = 25              # setelah ini pencarian dihentikan dan hasil yang ada langsung disimpan
+GAGAL_BERUNTUN_MAKS = 2       # situs yang gagal 2x berturut-turut dilewati sisanya (biasanya karena memblokir)
+_MULAI = time.monotonic()
+
+
+def waktu_habis() -> bool:
+    return time.monotonic() - _MULAI > BATAS_MENIT * 60
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -234,7 +241,7 @@ def deteksi_sumber(url: str) -> str:
 def sumber_kalibrr(kata: str) -> list[dict]:
     url = "https://www.kalibrr.com/kjs/job_board/search"
     r = requests.get(url, params={"limit": 40, "offset": 0, "text": kata, "country": "Indonesia"},
-                     headers=UA, timeout=30)
+                     headers=UA, timeout=15)
     r.raise_for_status()
     data = r.json()
     jobs = data.get("jobs") if isinstance(data, dict) else data
@@ -268,7 +275,7 @@ def sumber_jobstreet(kata: str) -> list[dict]:
     params = {"siteKey": "ID-Main", "sourcesystem": "houston", "keywords": kata,
               "page": 1, "pageSize": 40, "sortmode": "ListedDate", "locale": "id-ID",
               "daterange": MAKS_HARI}
-    r = requests.get(url, params=params, headers={**UA, "Accept": "application/json"}, timeout=30)
+    r = requests.get(url, params=params, headers={**UA, "Accept": "application/json"}, timeout=15)
     r.raise_for_status()
     data = r.json()
     hasil = []
@@ -312,7 +319,7 @@ def _label(teks: str, label: str) -> str:
 
 def tautan_disnakerja(halaman: int) -> list[str]:
     url = "https://www.disnakerja.com/" if halaman == 1 else f"https://www.disnakerja.com/page/{halaman}/"
-    r = requests.get(url, headers=UA, timeout=30)
+    r = requests.get(url, headers=UA, timeout=15)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     hasil = []
@@ -326,8 +333,10 @@ def tautan_disnakerja(halaman: int) -> list[str]:
 def sumber_disnakerja(halaman: int) -> list[dict]:
     hasil = []
     for url in tautan_disnakerja(halaman):
+        if waktu_habis():
+            break
         try:
-            r = requests.get(url, headers=UA, timeout=30)
+            r = requests.get(url, headers=UA, timeout=15)
             r.raise_for_status()
         except requests.RequestException as e:
             print(f"[Disnakerja] lewati {url}: {e}", file=sys.stderr)
@@ -470,7 +479,7 @@ def baca_detail(url: str, isi_html: str, nama: str, wajib_jsonld: bool = False) 
 
 
 def _tautan_sitemap(url: str, pola: re.Pattern, kedalaman: int = 0) -> list[str]:
-    r = requests.get(url, headers=UA, timeout=30)
+    r = requests.get(url, headers=UA, timeout=15)
     r.raise_for_status()
     batas = (datetime.now(timezone.utc) - timedelta(days=MAKS_HARI)).strftime("%Y-%m-%d")
     hasil = []
@@ -493,15 +502,20 @@ def sumber_html(nama: str, kata_cari: list[str]) -> list[dict]:
     cfg = SUMBER_HTML[nama]
     pola = re.compile(cfg["pola"])
     tautan, catatan = [], []
+    gagal = 0
     for kata in kata_cari:
+        if waktu_habis() or gagal >= 3:
+            break
         for templat in cfg["daftar"]:
             url = templat.format(q=quote_plus(kata), slug=_slug(kata))
             try:
-                r = requests.get(url, headers=UA, timeout=30)
+                r = requests.get(url, headers=UA, timeout=15)
                 if r.status_code == 404:
                     continue
                 r.raise_for_status()
+                gagal = 0
             except requests.RequestException as e:
+                gagal += 1
                 catatan.append(f"{url}: {e}"); continue
             for href in re.findall(r"""href=["']([^"'#]+)""", r.text) + re.findall(r"https?://[^\s\"'<>]+", r.text):
                 u = urljoin(url, html.unescape(href)).split("?")[0].rstrip("/")
@@ -522,8 +536,10 @@ def sumber_html(nama: str, kata_cari: list[str]) -> list[dict]:
     urut = (cocok + [u for u in tautan if u not in cocok])[:MAKS_DETAIL_PER_SUMBER]
     hasil = []
     for u in urut:
+        if waktu_habis():
+            break
         try:
-            r = requests.get(u, headers=UA, timeout=30)
+            r = requests.get(u, headers=UA, timeout=15)
             r.raise_for_status()
             d = baca_detail(u, r.text, nama, cfg.get("wajib_jsonld", False))
             if d:
@@ -536,7 +552,7 @@ def sumber_html(nama: str, kata_cari: list[str]) -> list[dict]:
 
 
 def sumber_telegram(channel: str) -> list[dict]:
-    r = requests.get(f"https://t.me/s/{channel}", headers=UA, timeout=30)
+    r = requests.get(f"https://t.me/s/{channel}", headers=UA, timeout=15)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     hasil = []
@@ -678,7 +694,7 @@ def daftar_dokumen(koleksi: str) -> list[dict]:
         params = {"key": FIREBASE_API_KEY, "pageSize": 300}
         if token:
             params["pageToken"] = token
-        r = requests.get(f"{BASE}/{koleksi}", params=params, timeout=30)
+        r = requests.get(f"{BASE}/{koleksi}", params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
         for d in data.get("documents", []):
@@ -763,7 +779,7 @@ def rapikan_luar_wilayah() -> int:
         params = {"key": FIREBASE_API_KEY, "pageSize": 300}
         if token:
             params["pageToken"] = token
-        r = requests.get(f"{BASE}/rekomendasi", params=params, timeout=30)
+        r = requests.get(f"{BASE}/rekomendasi", params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
         for d in data.get("documents", []):
@@ -798,18 +814,29 @@ def kumpulkan(kata_cari: list[str]) -> tuple[list[dict], dict]:
              + [("Telegram", sumber_telegram, c) for c in TELEGRAM_CHANNELS]
              + [("Disnakerja", sumber_disnakerja, n) for n in range(1, DISNAKERJA_HALAMAN + 1)]
              + [(n, (lambda nama, k=kata_cari: sumber_html(nama, k[:12])), n) for n in SUMBER_HTML])
+    beruntun: dict[str, int] = {}
     for nama, fungsi, arg in tugas:
         lap = laporan.setdefault(nama, {"ok": 0, "gagal": 0, "lowongan": 0, "error": ""})
+        if waktu_habis():
+            lap["error"] = lap["error"] or f"dilewati: batas waktu {BATAS_MENIT} menit tercapai"
+            continue
+        if beruntun.get(nama, 0) >= GAGAL_BERUNTUN_MAKS:
+            continue  # situs ini sedang memblokir/bermasalah, jangan buang waktu
         try:
             hasil = fungsi(arg)
             lap["ok"] += 1
             lap["lowongan"] += len(hasil)
             semua.extend(hasil)
+            beruntun[nama] = 0
         except Exception as e:  # satu sumber gagal tidak menghentikan yang lain
             lap["gagal"] += 1
+            beruntun[nama] = beruntun.get(nama, 0) + 1
             lap["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+            if beruntun[nama] >= GAGAL_BERUNTUN_MAKS:
+                lap["error"] += f" (dilewati setelah {GAGAL_BERUNTUN_MAKS}x gagal berturut-turut)"
             print(f"[{nama}] gagal untuk '{arg}': {e}", file=sys.stderr)
         time.sleep(1.2)
+    print(f"Pengambilan selesai dalam {(time.monotonic() - _MULAI) / 60:.1f} menit")
     return semua, laporan
 
 
