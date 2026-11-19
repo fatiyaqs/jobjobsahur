@@ -191,6 +191,37 @@ tr:hover .rh .del{display:block}
 .mini th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 .mini .num{text-align:right}
 .mini button{background:none;border:0;padding:0;font-weight:700;color:var(--accent);cursor:pointer}
+/* rekomendasi */
+.rk-head{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;justify-content:space-between}
+.rk-head h2{margin:0;font-size:20px;font-weight:800}
+.rk-sub{color:var(--muted);font-size:12.5px;max-width:70ch}
+.rk-scan{display:flex;flex-wrap:wrap;gap:6px;font-size:12px}
+.rk-scan span{border:1px solid var(--grid);border-radius:999px;padding:3px 10px;background:var(--paper)}
+.rk-scan .bad{border-color:var(--late);color:var(--late);background:var(--late-bg)}
+.rk-filter{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chipbtn{border:1px solid var(--grid);background:var(--paper);border-radius:999px;padding:5px 12px;font-weight:600;font-size:12.5px;cursor:pointer}
+.chipbtn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.chipbtn b{font-family:var(--f-num);font-weight:500;margin-left:4px;opacity:.8}
+.rk-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+@media (max-width:700px){.rk-list{grid-template-columns:1fr}}
+.rk{background:var(--paper);border:1px solid var(--grid);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.rk.done{opacity:.6}
+.rk-top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.rk-cv{font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);background:var(--accent-soft);border-radius:5px;padding:2px 7px;white-space:nowrap}
+.rk-skor{font-family:var(--f-num);font-size:12px;color:var(--muted);white-space:nowrap}
+.rk h3{margin:0;font-size:15px;line-height:1.3;overflow-wrap:anywhere}
+.rk-co{font-weight:600;font-size:13px}
+.rk-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--muted)}
+.rk-why{display:flex;flex-wrap:wrap;gap:4px}
+.rk-why span{font-size:11px;background:var(--hdr);border-radius:4px;padding:1px 6px;color:var(--muted)}
+.rk details{font-size:12px;color:var(--muted)}
+.rk details summary{cursor:pointer;font-weight:600;color:var(--ink)}
+.rk details p{margin:6px 0 0;white-space:pre-line;overflow-wrap:anywhere}
+.rk-kontak{font-family:var(--f-num);font-size:12px;user-select:all;overflow-wrap:anywhere}
+.rk-act{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto;padding-top:4px}
+.rk-act a.btn,.rk-head a.btn{text-decoration:none;color:var(--accent)}
+.rk-empty{background:var(--paper);border:1px dashed var(--grid);border-radius:12px;padding:20px;color:var(--muted);line-height:1.6}
+.rk-empty ol{margin:6px 0 0;padding-left:20px}
 .pill{display:inline-block;border-radius:999px;padding:1px 8px;font-family:var(--f-num);font-size:11.5px;white-space:nowrap}
 .pill.b-late{background:var(--late-bg);color:var(--late)}.pill.b-urgent{background:var(--urgent-bg);color:var(--urgent)}
 .pill.b-soon{background:var(--soon-bg);color:var(--soon)}.pill.b-ok{background:var(--ok-bg);color:var(--ok)}
@@ -336,6 +367,7 @@ tr:hover .rh .del{display:block}
     <div class="cards" id="cards" hidden></div>
   </div>
   <div class="dash" id="dash" hidden><div class="dash-in pad" id="dashIn"></div></div>
+  <div class="dash" id="rek" hidden><div class="dash-in pad" id="rekIn"></div></div>
 
   <nav class="tabs pad" id="tabs" aria-label="Sheet"></nav>
 </div>
@@ -435,6 +467,8 @@ function deepMerge(t,p){for(const k in p){const v=p[k];if(v&&typeof v==="object"
 /* ---------- state & store ---------- */
 let rows=[],mode="loading",readOnly=false,col=null,sheetDoc=null,userApi=null,myId=null,myName="",names={};
 let sheetNames=[];
+let recs=[],scan=null,rekCol=null,recsLoaded=false;
+const REPO_ACTIONS="https://github.com/fatiyaqs/jobjobsahur/actions/workflows/cari-lowongan.yml";
 let tab=lsGet("jvt-tab3")||"";
 const LS="jvt-rows-v3",LSP="jvt-people-v3";
 function exampleLocal(){
@@ -491,6 +525,9 @@ function fbAdapter(){
       const c=await userApi.can("data.write");if(c===false){readOnly=true;note(RO_MSG)}}
   }catch{}
   col=db.collection("jobs");sheetDoc=db.doc("config/sheets");
+  rekCol=db.collection("rekomendasi");
+  rekCol.onSnapshot(s=>{recs=s.docs.map(d=>({id:d.id,...d.data()}));recsLoaded=true;requestRender()},()=>{recsLoaded=true;requestRender()});
+  db.doc("config/scan").onSnapshot(s=>{scan=s.exists?s.data():null;requestRender()},()=>{});
   sheetDoc.onSnapshot(s=>{const d=s.exists?s.data():null;sheetNames=d&&Array.isArray(d.names)?d.names.filter(x=>typeof x==="string"):[];requestRender()},()=>{});
   const timer=setTimeout(()=>{if(mode==="loading")note("Data belum bisa dijangkau. Periksa koneksi Anda.")},10000);
   col.onSnapshot(s=>{
@@ -566,7 +603,7 @@ $("#viewBtn").onclick=()=>{viewPref=useCards()?"grid":"cards";lsSet("jvt-view",v
 $("#fToggle").onclick=()=>{const o=$("#ribbon").classList.toggle("open");$("#fToggle").setAttribute("aria-expanded",o)};
 const openSet=new Set();
 document.addEventListener("toggle",e=>{const d=e.target;if(d.classList&&d.classList.contains("jc-more")){const id=d.closest("[data-id]").dataset.id;d.open?openSet.add(id):openSet.delete(id)}},true);
-function requestRender(){if(editing()&&tab!=="dash"){pending=true;return}render()}
+function requestRender(){if(editing()&&tab!=="dash"&&tab!=="rek"){pending=true;return}render()}
 document.addEventListener("focusout",e=>{if(!pending)return;const to=e.relatedTarget;const key=to&&to.dataset&&to.dataset.k?{id:to.closest("[data-id]")?.dataset.id,k:to.dataset.k}:null;setTimeout(()=>{if(editing()&&!key)return;pending=false;render();if(key){const el=document.querySelector(`[data-id="${CSS.escape(key.id||"")}"] [data-k="${CSS.escape(key.k)}"]`);if(el)el.focus({preventScroll:true})}},0)});
 
 /* ---------- tabs ---------- */
@@ -575,9 +612,10 @@ function renderTabs(){
   if(adding&&$("#newPersonForm"))return;
   const P=people();
   if(!tab||(tab.startsWith("p:")&&!P.includes(tab.slice(2))&&mode!=="loading"))tab=P.length?"p:"+P[0]:"all";
-  const T=[["dash","Dashboard",null],["all","Semua Orang",null],...P.map(p=>["p:"+p,p,rows.filter(r=>appliedP(r,p)).length])];
+  const nNew=recs.filter(r=>(r.status||"baru")==="baru").length;
+  const T=[["dash","Dashboard",null,""],["rek","Rekomendasi",nNew?String(nNew):null,"Rekomendasi baru"],["all","Semua Orang",null,""],...P.map(p=>{const n=rows.filter(r=>appliedP(r,p)).length;return["p:"+p,p,`${n}/${rows.length}`,`${n} lamaran terkirim`]})];
   const tp=tabPerson();
-  $("#tabs").innerHTML=T.map(([id,l,n])=>`<button class="tab${tab===id?" on":""}" data-tab="${esc(id)}" ${n!==null?`title="${n} lamaran terkirim"`:""}>${esc(l)}${n!==null?`<b>${n}/${rows.length}</b>`:""}</button>`).join("")
+  $("#tabs").innerHTML=T.map(([id,l,b,t])=>`<button class="tab${tab===id?" on":""}" data-tab="${esc(id)}"${t?` title="${esc(t)}"`:""}>${esc(l)}${b!==null?`<b>${esc(b)}</b>`:""}</button>`).join("")
     +(!readOnly&&tp!==null?`<button class="tab rm" id="rmPerson" title="Hapus ${esc(tp)} dari daftar orang">Hapus orang</button>`:"")
     +(readOnly?"":adding
       ?`<form class="newtab" id="newPersonForm"><input id="newPerson" placeholder="Nama orang" maxlength="40" autocomplete="off" aria-label="Nama orang baru"><button class="btn primary" type="submit">Tambah</button><button class="btn" type="button" id="newPersonX">Batal</button></form>`
@@ -613,14 +651,14 @@ function render(){
   $("#clearDemo").hidden=readOnly||!rows.some(r=>r.contoh);
   $("#qa").hidden=readOnly;
   renderTabs();
-  const isDash=tab==="dash",cards=useCards(),p=tabPerson();
-  $("#dash").hidden=!isDash;$("#sheetUi").hidden=isDash;
+  const isRek=tab==="rek",isDash=tab==="dash"||isRek,cards=useCards(),p=tabPerson();
+  $("#dash").hidden=tab!=="dash";$("#rek").hidden=!isRek;$("#sheetUi").hidden=isDash;
   $("#gridwrap").hidden=isDash||cards;$("#cards").hidden=isDash||!cards;$("#fbarRow").hidden=cards;
   $("#viewBtn").textContent=cards?"Tampilan grid":"Tampilan kartu";
   $("#who").innerHTML=p!==null?`Mengisi progres: <b>${esc(p)}</b>`:`Ringkasan status <b>semua orang</b>`;
   const nf=["bidang","lokasi","status","dl","prio"].filter(k=>F[k].value).length;
   $("#fToggle").textContent=nf?`Filter (${nf})`:"Filter";
-  if(isDash)renderDash();else if(cards)renderCards();else renderGrid();
+  if(isRek)renderRek();else if(isDash)renderDash();else if(cards)renderCards();else renderGrid();
 }
 function getV(r,c,p){if(c.person)return stOf(r,c.person);if(c.me)return prog(r,p)[c.k]??"";return r[c.k]??""}
 function cellHtml(c,r,p){
@@ -758,6 +796,58 @@ $("#copyBtn").onclick=async()=>{
   try{await navigator.clipboard.writeText(txt);toast("Tersalin. Tempel di Excel atau Google Sheets.")}
   catch{const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");toast("Tersalin.")}catch{toast("Gagal menyalin.")}ta.remove()}
 };
+
+/* ---------- rekomendasi ---------- */
+const CVS=["GIS","Research","Operations","Administration","Human Resources","General"];
+let rkCv=lsGet("jvt-rkcv")||"",rkSt=lsGet("jvt-rkst")||"baru";
+const fmtD=d=>{if(!d)return"";const[y,m,dd]=String(d).slice(0,10).split("-");return m?`${+dd} ${BULAN[+m-1]} ${y}`:d};
+function renderRek(){
+  const box=$("#rekIn");
+  const scanHtml=scan?`<div class="rk-scan"><span>Pencarian terakhir: <b>${esc(new Date(scan.terakhir).toLocaleString("id-ID",{dateStyle:"medium",timeStyle:"short"}))}</b></span><span>${scan.diambil||0} lowongan dicek · ${scan.cocok||0} cocok · ${scan.baru||0} baru</span>${Object.entries(scan.sumber||{}).map(([k,v])=>`<span class="${v.ok?"":"bad"}" title="${esc(v.error||"")}">${esc(k)}: ${v.ok?`${v.lowongan} lowongan`:"gagal"}</span>`).join("")}</div>`:"";
+  if(mode!=="db"){box.innerHTML=`<div class="rk-head"><h2>Rekomendasi lowongan</h2></div><div class="rk-empty">Rekomendasi otomatis hanya tersedia saat tracker tersambung ke Firebase.</div>`;return}
+  const list=recs.filter(r=>(!rkCv||r.cv===rkCv)&&(rkSt==="semua"||(r.status||"baru")===rkSt))
+    .sort((a,b)=>(b.skor||0)-(a.skor||0)||String(b.ditemukan||"").localeCompare(String(a.ditemukan||"")));
+  const cnt=cv=>recs.filter(r=>(rkSt==="semua"||(r.status||"baru")===rkSt)&&(!cv||r.cv===cv)).length;
+  const head=`<div class="rk-head"><div><h2>Rekomendasi lowongan</h2><div class="rk-sub">Dicari otomatis setiap pagi dari Kalibrr, Jobstreet, dan kanal GIS/RS Jobs, lalu dicocokkan dengan 6 CV Fatiya. Label di kiri atas menunjukkan CV yang paling cocok dikirim.</div></div>
+    <a class="btn" href="${REPO_ACTIONS}" target="_blank" rel="noopener" title="Buka GitHub Actions, lalu klik Run workflow">Cari sekarang ↗</a></div>${scanHtml}
+    <div class="rk-filter">${["",...CVS].map(c=>`<button class="chipbtn${rkCv===c?" on":""}" data-cv="${esc(c)}">${c?"CV "+esc(c):"Semua CV"}<b>${cnt(c)}</b></button>`).join("")}
+      <select id="rkSt" aria-label="Status rekomendasi" style="margin-left:auto;background:var(--paper);border:1px solid var(--grid);border-radius:7px;padding:6px 10px">${[["baru","Belum ditinjau"],["ditambahkan","Sudah ditambahkan"],["diabaikan","Diabaikan"],["semua","Semua"]].map(([v,l])=>`<option value="${v}"${rkSt===v?" selected":""}>${l}</option>`).join("")}</select></div>`;
+  let body;
+  if(!recsLoaded)body=`<div class="rk-empty">Memuat rekomendasi…</div>`;
+  else if(!recs.length)body=`<div class="rk-empty"><b>Belum ada rekomendasi.</b> Jalankan pencarian pertama:<ol><li>Klik <b>Cari sekarang</b> di kanan atas (membuka GitHub Actions).</li><li>Klik <b>Run workflow</b>, lalu <b>Run workflow</b> lagi.</li><li>Tunggu 3–5 menit. Rekomendasi muncul di sini otomatis.</li></ol>Setelah itu pencarian berjalan sendiri setiap pagi pukul 06.17 WIB.</div>`;
+  else if(!list.length)body=`<div class="rk-empty">Tidak ada rekomendasi untuk pilihan ini.</div>`;
+  else body=`<div class="rk-list">${list.map(r=>{const st=r.status||"baru",link=safeUrl(r.link);
+    const dl=r.deadline?`Deadline ${fmtD(r.deadline)}`:(r.deadlineTeks?`Deadline ${esc(r.deadlineTeks)}`:"");
+    return `<article class="rk${st!=="baru"?" done":""}" data-rid="${esc(r.id)}">
+      <div class="rk-top"><span class="rk-cv">Pakai CV ${esc(r.cv||"General")}</span><span class="rk-skor" title="Skor kecocokan">skor ${r.skor??"–"}</span></div>
+      <h3>${esc(r.posisi)}</h3>${r.perusahaan?`<div class="rk-co">${esc(r.perusahaan)}</div>`:""}
+      <div class="rk-meta">${[r.lokasi,r.sistem].filter(Boolean).map(x=>`<span>${esc(x)}</span>`).join("")}<span>${esc(r.sumber||"")}</span>${r.diposting?`<span>Diposting ${fmtD(r.diposting)}</span>`:""}${dl?`<span style="color:var(--urgent)">${dl}</span>`:""}${r.gaji?`<span>${esc(r.gaji)}</span>`:""}</div>
+      ${(r.alasan||[]).length?`<div class="rk-why">${r.alasan.map(a=>`<span>${esc(a)}</span>`).join("")}</div>`:""}
+      ${r.kontak?`<div>Kirim ke: <span class="rk-kontak">${esc(r.kontak)}</span></div>`:""}
+      ${r.ringkas?`<details><summary>Ringkasan</summary><p>${esc(r.ringkas)}</p></details>`:""}
+      <div class="rk-act">${link?`<a class="btn" href="${esc(link)}" target="_blank" rel="noopener">Buka lowongan ↗</a>`:""}
+        ${readOnly?"":st==="baru"?`<button class="btn primary" data-rk="add">+ Tambah ke tracker</button><button class="btn" data-rk="skip">Abaikan</button>`:`<button class="btn" data-rk="reset">${st==="ditambahkan"?"Sudah ditambahkan":"Diabaikan"} · urungkan</button>`}</div>
+    </article>`}).join("")}</div>`;
+  box.innerHTML=head+body;
+}
+$("#rekIn").addEventListener("change",e=>{if(e.target.id==="rkSt"){rkSt=e.target.value;lsSet("jvt-rkst",rkSt);renderRek()}});
+$("#rekIn").addEventListener("click",async e=>{
+  const c=e.target.closest("[data-cv]");if(c){rkCv=c.dataset.cv;lsSet("jvt-rkcv",rkCv);renderRek();return}
+  const b=e.target.closest("[data-rk]");if(!b||readOnly)return;
+  const r=recs.find(x=>x.id===b.closest("[data-rid]").dataset.rid);if(!r)return;
+  const setSt=st=>guard(rekCol.doc(r.id).update({status:st}));
+  if(b.dataset.rk==="skip"){await setSt("diabaikan");return}
+  if(b.dataset.rk==="reset"){await setSt("baru");return}
+  b.disabled=true;
+  const who=r.untuk||"";
+  if(who&&!people().includes(who))await savePeople([...people(),who]);
+  const job={perusahaan:r.perusahaan||"(lihat lowongan)",posisi:r.posisi||"",deadline:r.deadline||"",link:r.link||"",
+    sumber:r.sumberLink&&r.sumberLink!=="Website Perusahaan"?r.sumberLink:(r.sumber||""),lokasi:r.lokasi||"",sistem:r.sistem||"",bidang:r.cv==="General"?"":r.cv,
+    caraApply:r.kontak?detectCara(r.kontak):"",caraDetail:r.kontak||"",tglDitemukan:TODAY,aktif:true,contoh:false,
+    catatan:[`Rekomendasi otomatis: pakai CV ${r.cv}`,r.deadlineTeks&&!r.deadline?`deadline ${r.deadlineTeks}`:"",r.gaji].filter(Boolean).join(" · "),
+    progress:who?{[who]:{status:"Belum Apply",prioritas:(r.skor||0)>=10?"High":"Medium"}}:{},createdAt:new Date().toISOString()};
+  if(await guard(api.add(job))){await setSt("ditambahkan");toast(`${r.posisi} ditambahkan ke tracker`)}else b.disabled=false;
+});
 
 /* ---------- dashboard ---------- */
 let dashScope=lsGet("jvt-dscope3")||"";
