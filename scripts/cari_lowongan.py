@@ -3,7 +3,7 @@ Pencari lowongan otomatis untuk Job Vacancy Tracker.
 
 Dijalankan oleh GitHub Actions (lihat .github/workflows/cari-lowongan.yml) setiap hari.
 Script ini:
-  1. Mengambil lowongan terbaru dari beberapa sumber (Kalibrr, Jobstreet, Telegram GIS/RS Jobs).
+  1. Mengambil lowongan terbaru dari beberapa sumber (Kalibrr, Jobstreet, Telegram GIS/RS Jobs, Disnakerja).
   2. Memberi skor kecocokan terhadap 6 versi CV Fatiya (GIS, Research, Operations,
      Administration, Human Resources, General).
   3. Menyimpan lowongan yang cocok ke Firestore (koleksi "rekomendasi"), lalu
@@ -102,6 +102,7 @@ WILAYAH = ["jakarta", "dki", "jabodetabek", "depok", "bogor", "cibinong", "sentu
 TERIMA_REMOTE = False   # ubah ke True kalau lowongan remote juga ingin ditampilkan
 
 TELEGRAM_CHANNELS = ["gis_id_jobs"]
+DISNAKERJA_HALAMAN = 6        # jumlah halaman daftar terbaru Disnakerja yang dibaca (±12 perusahaan/halaman)
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -229,6 +230,93 @@ def sumber_jobstreet(kata: str) -> list[dict]:
             "gaji": bersih(j.get("salaryLabel")),
             "isi": bersih(" ".join([str(j.get("teaser", "")), " ".join(map(str, j.get("bulletPoints") or []))])),
         })
+    return hasil
+
+
+BUKAN_POSTING = {"kategori", "industri", "tipe", "pendidikan", "lokasi", "blog", "kontak", "terbaru",
+                 "page", "berdasarkan-jurusan", "tag", "author", "about", "tentang", "privacy-policy",
+                 "disclaimer", "wp-content", "wp-admin", "feed", "category", "search", "contact"}
+LABEL_DISNAKERJA = ["Last Update", "Kategori", "Lokasi", "Tipe Pekerjaan", "Pendidikan", "Pengalaman",
+                    "Jumlah Posisi", "Gaji", "Deskripsi Pekerjaan", "Persyaratan", "Kualifikasi"]
+
+
+def _label(teks: str, label: str) -> str:
+    """Ambil nilai setelah 'Label:' sampai label berikutnya atau akhir baris."""
+    lain = "|".join(re.escape(x) for x in LABEL_DISNAKERJA if x != label)
+    m = re.search(rf"{re.escape(label)}\s*:\s*(.+?)(?=\s*(?:{lain})\s*:|\n|$)", teks)
+    return m.group(1).strip() if m else ""
+
+
+def tautan_disnakerja(halaman: int) -> list[str]:
+    url = "https://www.disnakerja.com/" if halaman == 1 else f"https://www.disnakerja.com/page/{halaman}/"
+    r = requests.get(url, headers=UA, timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    hasil = []
+    for a in soup.select("a[href]"):
+        m = re.match(r"https?://(?:www\.)?disnakerja\.com/([a-z0-9-]+)/?$", a["href"].split("#")[0].split("?")[0])
+        if m and m.group(1) not in BUKAN_POSTING and m.group(1) not in hasil:
+            hasil.append(m.group(1))
+    return [f"https://www.disnakerja.com/{slug}/" for slug in hasil]
+
+
+def sumber_disnakerja(halaman: int) -> list[dict]:
+    hasil = []
+    for url in tautan_disnakerja(halaman):
+        try:
+            r = requests.get(url, headers=UA, timeout=30)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[Disnakerja] lewati {url}: {e}", file=sys.stderr)
+            continue
+        soup = BeautifulSoup(r.text, "html.parser")
+        h1 = soup.find("h1")
+        judul = bersih(h1.get_text(" ")) if h1 else ""
+        badan = soup.find("article") or soup.select_one(".entry-content, .post-content, main") or soup
+        teks = badan.get_text("\n", strip=True)
+        if not judul or "Persyaratan" not in teks and "Kualifikasi" not in teks:
+            time.sleep(0.6)
+            continue
+        perusahaan = re.sub(r"(?i)^(lowongan kerja|loker|rekrutmen|recruitment)\s+", "", judul).strip()
+        # Kandidat nama posisi: teks tebal pendek yang bukan label
+        posisi = []
+        for b in badan.find_all(["strong", "b", "h2", "h3", "h4"]):
+            t = bersih(b.get_text(" "))
+            if 3 <= len(t) <= 80 and not t.endswith(":") and t.lower() not in (x.lower() for x in LABEL_DISNAKERJA) \
+                    and not re.search(r"(?i)perusahaan lainnya|pesan sponsor|share|bagikan|lowongan ini", t) and t not in posisi:
+                posisi.append(t)
+        lokasi = _label(teks, "Lokasi")
+        pengalaman = _label(teks, "Pengalaman")
+        update = _label(teks, "Last Update")
+        try:
+            diposting = datetime.strptime(update, "%B %d, %Y").strftime("%Y-%m-%d") if update else ""
+        except ValueError:
+            diposting = tanggal_iso(update)
+        m_email = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", teks)
+        m_dl = re.search(r"(?i)(?:batas[^:\n]{0,25}|deadline|ditutup|closing date)\s*:?\s*(\d{1,2}\s+[A-Za-z]+\s+20\d\d)", teks)
+        isi = f"{teks[:3000]} pengalaman {pengalaman} pendidikan {_label(teks, 'Pendidikan')}"
+        # Pilih posisi yang paling cocok dengan profil sebagai judul rekomendasi
+        kandidat = [{"posisi": p, "isi": isi, "perusahaan": perusahaan} for p in posisi[:15]] or \
+                   [{"posisi": perusahaan, "isi": isi, "perusahaan": perusahaan}]
+        terbaik = max(kandidat, key=lambda k: nilai(k)[0])
+        m_th = re.search(r"(\d+)", pengalaman)
+        if m_th and int(m_th.group(1)) >= 3:
+            isi += " minimal 5 tahun"  # dorong skor turun untuk lowongan berpengalaman
+        hasil.append({
+            "sumber": "Disnakerja",
+            "sid": f"disnakerja-{url.rstrip('/').rsplit('/', 1)[-1]}",
+            "posisi": terbaik["posisi"][:140] + (f" (+{len(posisi) - 1} posisi lain)" if len(posisi) > 1 else ""),
+            "perusahaan": perusahaan[:120],
+            "lokasi": lokasi[:120],
+            "sistem": "",
+            "link": url,
+            "kontak": m_email.group(0) if m_email else "",
+            "diposting": diposting,
+            "deadline": "",
+            "deadline_teks": m_dl.group(1) if m_dl else "",
+            "isi": isi,
+        })
+        time.sleep(0.6)
     return hasil
 
 
@@ -389,7 +477,8 @@ def kumpulkan() -> tuple[list[dict], dict]:
     semua, laporan = [], {}
     tugas = ([("Kalibrr", sumber_kalibrr, k) for k in KATA_KUNCI_CARI]
              + [("Jobstreet", sumber_jobstreet, k) for k in KATA_KUNCI_CARI]
-             + [("Telegram", sumber_telegram, c) for c in TELEGRAM_CHANNELS])
+             + [("Telegram", sumber_telegram, c) for c in TELEGRAM_CHANNELS]
+             + [("Disnakerja", sumber_disnakerja, n) for n in range(1, DISNAKERJA_HALAMAN + 1)])
     for nama, fungsi, arg in tugas:
         lap = laporan.setdefault(nama, {"ok": 0, "gagal": 0, "lowongan": 0, "error": ""})
         try:
