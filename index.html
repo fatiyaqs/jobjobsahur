@@ -808,7 +808,7 @@ function renderRek(){
   const list=recs.filter(r=>(!rkCv||r.cv===rkCv)&&(rkSt==="semua"||(r.status||"baru")===rkSt))
     .sort((a,b)=>(b.skor||0)-(a.skor||0)||String(b.ditemukan||"").localeCompare(String(a.ditemukan||"")));
   const cnt=cv=>recs.filter(r=>(rkSt==="semua"||(r.status||"baru")===rkSt)&&(!cv||r.cv===cv)).length;
-  const head=`<div class="rk-head"><div><h2>Rekomendasi lowongan</h2><div class="rk-sub">Dicari otomatis setiap pagi dari Kalibrr, Jobstreet, dan kanal GIS/RS Jobs, lalu dicocokkan dengan 6 CV Fatiya. Label di kiri atas menunjukkan CV yang paling cocok dikirim.</div></div>
+  const head=`<div class="rk-head"><div><h2>Rekomendasi lowongan</h2><div class="rk-sub">Lowongan di Jabodetabek, dicari otomatis setiap pagi dari Kalibrr, Jobstreet, Disnakerja, dan kanal GIS/RS Jobs, lalu dicocokkan dengan 6 CV Fatiya. Label di kiri atas menunjukkan CV yang paling cocok dikirim.</div></div>
     <a class="btn" href="${REPO_ACTIONS}" target="_blank" rel="noopener" title="Buka GitHub Actions, lalu klik Run workflow">Cari sekarang ↗</a></div>${scanHtml}
     <div class="rk-filter">${["",...CVS].map(c=>`<button class="chipbtn${rkCv===c?" on":""}" data-cv="${esc(c)}">${c?"CV "+esc(c):"Semua CV"}<b>${cnt(c)}</b></button>`).join("")}
       <select id="rkSt" aria-label="Status rekomendasi" style="margin-left:auto;background:var(--paper);border:1px solid var(--grid);border-radius:7px;padding:6px 10px">${[["baru","Belum ditinjau"],["ditambahkan","Sudah ditambahkan"],["diabaikan","Diabaikan"],["semua","Semua"]].map(([v,l])=>`<option value="${v}"${rkSt===v?" selected":""}>${l}</option>`).join("")}</select></div>`;
