@@ -852,7 +852,11 @@ def saring(semua: list[dict]) -> list[dict]:
 def main() -> int:
     kering = "--dry-run" in sys.argv
     global PROFIL_ORANG
-    PROFIL_ORANG = dict(PROFIL_AWAL) if kering else muat_profil()
+    try:
+        PROFIL_ORANG = dict(PROFIL_AWAL) if kering else muat_profil()
+    except requests.RequestException as e:  # database tidak terjangkau: tetap cari dengan profil awal
+        print(f"Gagal membaca profil, memakai profil awal: {e}", file=sys.stderr)
+        PROFIL_ORANG = dict(PROFIL_AWAL)
     print("Profil:", ", ".join(f"{n} ({len(m)} minat)" for n, m in PROFIL_ORANG.items()))
     semua, laporan = kumpulkan(kata_cari_dari_profil(PROFIL_ORANG))
     cocok = saring(semua)
@@ -870,7 +874,8 @@ def main() -> int:
             "cv": low["cv"], "skor": low["skor"], "alasan": low["alasan"],
             "ringkas": low.get("isi", "")[:400], "untuk": low["untuk"], "cocok": low["cocok"],
         }
-        print(f"  [{low['skor']:>2}] {', '.join(f'{n}:{c["cv"]}' for n, c in low['cocok'].items()):<40} "
+        siapa = ", ".join(f"{n}:{c['cv']}" for n, c in low["cocok"].items())
+        print(f"  [{low['skor']:>2}] {siapa:<40} "
               f"{low['posisi'][:50]} — {low.get('perusahaan','')}")
         if kering:
             continue
