@@ -95,8 +95,11 @@ KATA_NEGATIF_ISI = ["minimal 5 tahun", "minimum 5 years", "5+ years", "min. 5", 
 KATA_POSITIF_ISI = ["fresh graduate", "lulusan baru", "fresh grad", "0-1", "0 - 1",
                     "1 tahun", "1 year", "entry level", "geografi", "geography"]
 
-LOKASI_DISUKAI = ["depok", "jakarta", "bogor", "bekasi", "tangerang", "jabodetabek",
-                  "remote", "wfh", "indonesia"]
+# Hanya lowongan di Jabodetabek yang disimpan.
+WILAYAH = ["jakarta", "dki", "jabodetabek", "depok", "bogor", "cibinong", "sentul", "cileungsi",
+           "cibubur", "bekasi", "cikarang", "tangerang", "tangsel", "bsd", "serpong", "karawaci",
+           "alam sutera", "ciputat", "pamulang", "bintaro", "cikupa", "balaraja"]
+TERIMA_REMOTE = False   # ubah ke True kalau lowongan remote juga ingin ditampilkan
 
 TELEGRAM_CHANNELS = ["gis_id_jobs"]
 
@@ -304,9 +307,6 @@ def nilai(lowongan: dict) -> tuple[int, str, list[str]]:
         bonus -= 4
     if any(k in isi or k in judul for k in KATA_POSITIF_ISI):
         bonus += 2; alasan_terbaik.append("cocok untuk fresh grad/geografi")
-    lok = (lowongan.get("lokasi", "") + " " + lowongan.get("sistem", "")).lower()
-    if lok.strip() and any(k in lok for k in LOKASI_DISUKAI):
-        bonus += 1
     return terbaik + bonus, cv_terbaik, list(dict.fromkeys(alasan_terbaik))[:6]
 
 
@@ -350,6 +350,32 @@ def simpan_rekomendasi(doc_id: str, data: dict) -> str:
     return "baru"
 
 
+def rapikan_luar_wilayah() -> int:
+    """Tandai rekomendasi lama (status 'baru') di luar Jabodetabek sebagai 'diabaikan'."""
+    jumlah, token = 0, None
+    while True:
+        params = {"key": FIREBASE_API_KEY, "pageSize": 300}
+        if token:
+            params["pageToken"] = token
+        r = requests.get(f"{BASE}/rekomendasi", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for d in data.get("documents", []):
+            f = {k: next(iter(v.values())) for k, v in d.get("fields", {}).items()
+                 if isinstance(v, dict) and v and k in ("lokasi", "sistem", "posisi", "ringkas", "status")}
+            low = {"lokasi": f.get("lokasi") or "", "sistem": f.get("sistem") or "",
+                   "posisi": f.get("posisi") or "", "isi": f.get("ringkas") or ""}
+            if (f.get("status") or "baru") == "baru" and not di_jabodetabek(low):
+                requests.patch(f"https://firestore.googleapis.com/v1/{d['name']}",
+                               params={"key": FIREBASE_API_KEY, "updateMask.fieldPaths": "status"},
+                               json={"fields": {"status": {"stringValue": "diabaikan"}}},
+                               timeout=20).raise_for_status()
+                jumlah += 1
+        token = data.get("nextPageToken")
+        if not token:
+            return jumlah
+
+
 def simpan_status(status: dict) -> None:
     r = requests.patch(f"{BASE}/config/scan", params={"key": FIREBASE_API_KEY},
                        json={"fields": {k: ke_firestore(v) for k, v in status.items()}}, timeout=20)
@@ -379,6 +405,16 @@ def kumpulkan() -> tuple[list[dict], dict]:
     return semua, laporan
 
 
+def di_jabodetabek(low: dict) -> bool:
+    """Pakai kolom lokasi; kalau kosong (mis. Telegram), cari nama wilayah di teks lowongan."""
+    lok = (low.get("lokasi", "") + " " + low.get("sistem", "")).lower()
+    if not low.get("lokasi"):
+        lok += " " + (low.get("posisi", "") + " " + low.get("isi", "")).lower()
+    if any(k in lok for k in WILAYAH):
+        return True
+    return TERIMA_REMOTE and any(k in lok for k in ["remote", "wfh", "work from home", "jarak jauh"])
+
+
 def saring(semua: list[dict]) -> list[dict]:
     batas = (datetime.now(timezone.utc) - timedelta(days=MAKS_HARI)).strftime("%Y-%m-%d")
     hari_ini = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -391,6 +427,8 @@ def saring(semua: list[dict]) -> list[dict]:
         if low.get("diposting") and low["diposting"] < batas:
             continue
         if low.get("deadline") and low["deadline"] < hari_ini:
+            continue
+        if not di_jabodetabek(low):
             continue
         skor, cv, alasan = nilai(low)
         if skor < SKOR_MINIMUM:
@@ -430,6 +468,10 @@ def main() -> int:
         except requests.HTTPError as e:
             print(f"Gagal menyimpan {low['sid']}: {e}", file=sys.stderr)
     if not kering:
+        try:
+            print(f"Rekomendasi lama di luar Jabodetabek disembunyikan: {rapikan_luar_wilayah()}")
+        except requests.HTTPError as e:
+            print(f"Gagal merapikan rekomendasi lama: {e}", file=sys.stderr)
         simpan_status({"terakhir": sekarang, "diambil": len(semua), "cocok": len(cocok),
                        "baru": baru, "sumber": laporan})
     print(json.dumps(laporan, ensure_ascii=False, indent=1))
